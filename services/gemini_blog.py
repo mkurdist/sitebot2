@@ -111,6 +111,7 @@ async def generate_blog_article(title: str, products_context: list) -> dict:
     ۵. **لینک‌سازی خارجی:** فقط یک لینک خروجی به یک سایت معتبر بده. لینک باید Dofollow باشد و استایل متن لینک باید دقیقاً اینگونه باشد تا نیمه‌بولد و زیبا دیده شود:
        <a href="آدرس_سایت" style="font-weight:600; color:#2c3e50; font-family:Tahoma, sans-serif; text-decoration:none; border-bottom:1px dashed #2c3e50;">کلمه مورد نظر</a>
     ۶. **نامک (Slug):** نامک انگلیسی باید بسیار کوتاه و مرتبط باشد (حداکثر ۴۰ کاراکتر).
+    ۷. **برچسب‌ها (Tags):** بین ۳ تا ۵ برچسب (تگ) کوتاه و کاملاً مرتبط برای مقاله تولید کن.
     """
     
     schema = {
@@ -124,9 +125,10 @@ async def generate_blog_article(title: str, products_context: list) -> dict:
             "seo_title": {"type": "STRING"},
             "meta_description": {"type": "STRING"},
             "slug": {"type": "STRING"},
+            "tags": {"type": "ARRAY", "items": {"type": "STRING"}},
             "content_html": {"type": "STRING"}
         },
-        "required": ["ai_reasoning", "focus_keyword", "seo_title", "meta_description", "slug", "content_html"]
+        "required": ["ai_reasoning", "focus_keyword", "seo_title", "meta_description", "slug", "tags", "content_html"]
     }
     
     return await _execute_waterfall_request(prompt, schema, task_type="heavy")
