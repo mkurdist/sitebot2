@@ -19,12 +19,10 @@ def _base() -> str: return os.getenv("GEMINI_API_BASE", "https://generativelangu
 class GeminiBlogError(Exception): pass
 RETRY_DELAYS = [5, 15, 40]
 
-# متد مشترک ارسال با سیستم استخر کلید و مسیریابی آبشاری
 async def _execute_waterfall_request(prompt: str, schema: dict, task_type: str = "heavy") -> dict:
     keys = _api_keys()
     if not keys: raise GeminiBlogError("هیچ کلیدی تنظیم نشده است.")
 
-    # تخصیص هوشمند وظایف: کارهای سبک فقط به مدل لایت می‌روند.
     primary_model = _model()
     lite_model = "gemini-3.5-flash-lite"
     
@@ -67,11 +65,17 @@ async def _execute_waterfall_request(prompt: str, schema: dict, task_type: str =
 
 
 # ==========================================
-# ۱. تولید عناوین جذاب (کار سبک -> فقط ارسال به مدل Lite)
+# ۱. تولید عناوین جذاب با در نظر گرفتن کلمات کلیدی ممنوعه
 # ==========================================
-async def generate_blog_titles(topic: str) -> list:
+async def generate_blog_titles(topic: str, locked_keywords: list = None) -> list:
+    locked_str = ""
+    if locked_keywords:
+        locked_str = "هشدار سئو: کلمات کلیدی زیر قبلاً در سایت استفاده شده‌اند. به هیچ وجه نباید از این کلمات به عنوان تمرکز اصلی عناوین استفاده کنی:\n"
+        locked_str += ", ".join(locked_keywords) + "\n\n"
+
     prompt = (
         f"تو یک متخصص سئو و کپی‌رایتر سایت 'شهر سفال' هستی. "
+        f"{locked_str}"
         f"برای موضوع '{topic}' دقیقاً ۵ عنوان مقاله بسیار جذاب، کلیک‌خور و سئوشده (بین ۵۰ تا ۶۵ کاراکتر) پیشنهاد بده. "
         f"عناوین نباید زرد باشند، بلکه کاربردی و مرتبط با سفال، سرامیک یا دکوراسیون باشند."
     )
@@ -85,33 +89,37 @@ async def generate_blog_titles(topic: str) -> list:
     return result.get("titles", [])
 
 # ==========================================
-# ۲. نگارش مقاله با عکس محصولات و سئوی پیشرفته (کار سنگین)
+# ۲. نگارش مقاله فوق‌پیشرفته (ارتقایافته)
 # ==========================================
-async def generate_blog_article(title: str, products_context: list) -> dict:
-    # ساخت متن زمینه شامل نام، لینک و آدرس عکس محصولات
-    context_str = ""
-    for p in products_context:
-        context_str += f"- نام: {p['name']} | لینک: {p['url']} | عکس: {p.get('image', '')}\n"
+async def generate_blog_article(title: str, all_products: list, locked_keywords: list = None) -> dict:
+    # 🌟 تزریق آیدی محصول به کاتالوگ برای رهگیری بک‌لینک‌ها
+    catalog_str = ""
+    for p in all_products:
+        catalog_str += f"- آیدی: {p['product_id']} | نام: {p['name']} | لینک: {p['permalink']} | عکس: {p['image_url']}\n"
+
+    locked_str = ""
+    if locked_keywords:
+        locked_str = "کلمات کلیدی ممنوعه (برای جلوگیری از همنوع‌خواری):\n" + ", ".join(locked_keywords) + "\n"
     
     prompt = f"""
-    پیش از تولید محتوا، مانند یک نویسنده ارشد ابتدا در ذهن خود استدلال کن، عیب‌های احتمالی (مثل کمبود کلمات، افت سئو یا خرابی لینک‌ها) را پیدا کرده و سپس کامل‌ترین، جامع‌ترین و بی‌نقص‌ترین نسخه ممکن را تولید کن.
+    پیش از تولید محتوا، مانند یک نویسنده ارشد ابتدا در ذهن خود استدلال کن، عیب‌های احتمالی را پیدا کرده و سپس کامل‌ترین نسخه ممکن را تولید کن.
     
     عنوان مقاله: "{title}"
     برند: "شهر سفال"
+    {locked_str}
     
     وظایف و قوانین سئو (بسیار مهم):
-    ۱. **طول و ساختار مقاله:** یک مقاله بسیار جامع، طولانی و عمیق (حداقل ۱۳۰۰ کلمه) بنویس. برای رسیدن به این حجم، حتماً از حداقل ۷ تیتر اصلی (H2) و زیرتیترهای متعدد (H3) استفاده کن و توضیحات هر بخش را با جزئیات کامل و پاراگراف‌های طولانی بسط بده. 
-    ۲. **استایل تیترها:** تمام تیترهای <h2> و <h3> باید با یک بولت (•) شروع شوند. (مثال: <h2>• اهمیت سفالگری</h2>)
-    ۳. **سئوی پایه:** کلمه کلیدی اصلی باید حتماً در خط اول پاراگراف اول استفاده شود.
-    ۴. **لینک‌سازی داخلی و تصاویر:** در لابه‌لای پاراگراف‌های مقاله، حداقل ۳ محصول مرتبط از لیست زیر را معرفی کن.
-       برای هر محصول، حتماً عکس آن را با این فرمت دقیق HTML در وسط متن قرار بده و به آن لینک بده (استایل لینک‌ها نیمه‌بولد، فونت شیک و مرتب است):
+    ۱. **طول و ساختار مقاله:** یک مقاله بسیار جامع، طولانی و عمیق (حداقل ۱۳۰۰ کلمه) بنویس. برای رسیدن به این حجم، حتماً از حداقل ۷ تیتر اصلی (H2) و زیرتیترهای متعدد (H3) استفاده کن. 
+    ۲. **استایل تیترها:** تمام تیترهای <h2> و <h3> باید با یک بولت (•) شروع شوند.
+    ۳. **سئوی پایه:** کلمه کلیدی اصلی باید حتماً در خط اول پاراگراف اول استفاده شود. این کلمه نباید جزو کلمات ممنوعه بالا باشد.
+    ۴. **لینک‌سازی داخلی هوشمند و ضد-توهم:** متن را تحلیل کن و حداقل ۳ محصول کاملاً مرتبط را از کاتالوگ زیر پیدا کن. به هیچ وجه آدرس لینک یا عکس را از خودت نساز؛ دقیقاً باید همانی باشد که در کاتالوگ است.
+       برای هر محصول انتخاب‌شده، عکس آن را با این فرمت دقیق HTML در وسط متن قرار بده:
        <a href="لینک_محصول" style="font-weight:600; color:#2c3e50; font-family:Tahoma, sans-serif; text-decoration:none;"><img src="عکس_محصول" alt="نام_محصول" style="display:block; margin:30px auto; max-width:350px; width:100%; border-radius:12px; box-shadow:0 4px 10px rgba(0,0,0,0.15);"></a>
-       لیست محصولات برای انتخاب:
-       {context_str}
-    ۵. **لینک‌سازی خارجی:** فقط یک لینک خروجی به یک سایت معتبر بده. لینک باید Dofollow باشد و استایل متن لینک باید دقیقاً اینگونه باشد تا نیمه‌بولد و زیبا دیده شود:
-       <a href="آدرس_سایت" style="font-weight:600; color:#2c3e50; font-family:Tahoma, sans-serif; text-decoration:none; border-bottom:1px dashed #2c3e50;">کلمه مورد نظر</a>
-    ۶. **نامک (Slug):** نامک انگلیسی باید بسیار کوتاه و مرتبط باشد (حداکثر ۴۰ کاراکتر).
-    ۷. **برچسب‌ها (Tags):** بین ۳ تا ۵ برچسب (تگ) کوتاه و کاملاً مرتبط برای مقاله تولید کن.
+       کاتالوگ محصولات سایت:
+       {catalog_str}
+    ۵. **بخش سوالات متداول (FAQ):** 🌟 در انتهای مقاله، یک تیتر H2 با عنوان "• سوالات متداول" ایجاد کن و ۳ سوال پرتکرار کاربران درباره این موضوع را با تگ H3 و جواب‌های کوتاه (پاراگراف) پاسخ بده.
+    ۶. **لینک‌سازی خارجی:** فقط یک لینک خروجی Dofollow به یک سایت معتبر بده با استایل: <a href="آدرس" style="font-weight:600; color:#2c3e50; font-family:Tahoma, sans-serif; text-decoration:none; border-bottom:1px dashed #2c3e50;">کلمه</a>
+    ۷. **نامک و برچسب‌ها:** نامک انگلیسی کوتاه (حداکثر ۴۰ کاراکتر) و بین ۳ تا ۵ برچسب مرتبط تولید کن.
     """
     
     schema = {
@@ -119,16 +127,21 @@ async def generate_blog_article(title: str, products_context: list) -> dict:
         "properties": {
             "ai_reasoning": {
                 "type": "STRING", 
-                "description": "ابتدا در این فیلد استدلال کن: آیا متن به 1300 کلمه می‌رسد؟ آیا تیترها • دارند؟ آیا لینک‌ها سالمند؟ عیب‌یابی کن."
+                "description": "استدلال: آیا کلمه کلیدی جدید است؟ ۱۳۰۰ کلمه رعایت شد؟ آیا لینک‌ها دقیقاً از کاتالوگ کپی شده‌اند؟"
             },
             "focus_keyword": {"type": "STRING"},
             "seo_title": {"type": "STRING"},
             "meta_description": {"type": "STRING"},
             "slug": {"type": "STRING"},
             "tags": {"type": "ARRAY", "items": {"type": "STRING"}},
+            "used_product_ids": {  # 🌟 استخراج هوشمند آیدی محصولات انتخاب شده
+                "type": "ARRAY", 
+                "items": {"type": "INTEGER"},
+                "description": "لیست دقیق آیدی (product_id) محصولاتی که از کاتالوگ انتخاب و در متن استفاده کردی."
+            },
             "content_html": {"type": "STRING"}
         },
-        "required": ["ai_reasoning", "focus_keyword", "seo_title", "meta_description", "slug", "tags", "content_html"]
+        "required": ["ai_reasoning", "focus_keyword", "seo_title", "meta_description", "slug", "tags", "used_product_ids", "content_html"]
     }
     
     return await _execute_waterfall_request(prompt, schema, task_type="heavy")
