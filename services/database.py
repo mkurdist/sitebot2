@@ -6,7 +6,14 @@ class DatabaseService:
 
     async def get_pool(self):
         if self._pool is None:
-            self._pool = await asyncpg.create_pool(DATABASE_URL)
+            # 🌟 محدود کردن اتصالات دیتابیس برای جلوگیری از خطای سقف Supabase
+            self._pool = await asyncpg.create_pool(
+                DATABASE_URL,
+                min_size=1,
+                max_size=3,
+                command_timeout=60,
+                max_inactive_connection_lifetime=300
+            )
             await self._init_tables()
         return self._pool
 
