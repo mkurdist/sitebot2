@@ -13,6 +13,9 @@ def _base(): return os.getenv("GEMINI_API_BASE", "https://generativelanguage.goo
 class GeminiBlogError(Exception):
     pass
 
+# تنظیمات زمان‌بندی برای تلاش مجدد در صورت شلوغی سرور (به ثانیه)
+RETRY_DELAYS = [5, 15, 40]
+
 # ==========================================
 # ۱. تولید عناوین جذاب (ایده‌پردازی)
 # ==========================================
@@ -39,16 +42,24 @@ async def generate_blog_titles(topic: str) -> list:
         "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema}
     }
     
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
-        async with session.post(url, json=body, headers=headers) as resp:
-            if resp.status != 200:
-                raise GeminiBlogError(f"API Error: {await resp.text()}")
-            data = await resp.json()
-            try:
-                content = data["candidates"][0]["content"]["parts"][0]["text"]
-                return json.loads(content).get("titles", [])
-            except:
-                raise GeminiBlogError("خطا در پردازش عناوین تولید شده.")
+    last_error = ""
+    for attempt in range(len(RETRY_DELAYS) + 1):
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
+                async with session.post(url, json=body, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        content = data["candidates"][0]["content"]["parts"][0]["text"]
+                        return json.loads(content).get("titles", [])
+                    
+                    last_error = await resp.text()
+        except Exception as e:
+            last_error = str(e)
+            
+        if attempt < len(RETRY_DELAYS):
+            await asyncio.sleep(RETRY_DELAYS[attempt])
+            
+    raise GeminiBlogError(f"API Error (پس از {len(RETRY_DELAYS) + 1} تلاش): {last_error}")
 
 # ==========================================
 # ۲. نگارش مقاله با لینک‌سازی داخلی و خارجی
@@ -93,13 +104,21 @@ async def generate_blog_article(title: str, products_context: list) -> dict:
         "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema, "maxOutputTokens": 8000}
     }
     
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=180)) as session:
-        async with session.post(url, json=body, headers=headers) as resp:
-            if resp.status != 200:
-                raise GeminiBlogError(f"API Error: {await resp.text()}")
-            data = await resp.json()
-            try:
-                content = data["candidates"][0]["content"]["parts"][0]["text"]
-                return json.loads(content)
-            except:
-                raise GeminiBlogError("خطا در پردازش مقاله تولید شده.")
+    last_error = ""
+    for attempt in range(len(RETRY_DELAYS) + 1):
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=180)) as session:
+                async with session.post(url, json=body, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        content = data["candidates"][0]["content"]["parts"][0]["text"]
+                        return json.loads(content)
+                    
+                    last_error = await resp.text()
+        except Exception as e:
+            last_error = str(e)
+            
+        if attempt < len(RETRY_DELAYS):
+            await asyncio.sleep(RETRY_DELAYS[attempt])
+            
+    raise GeminiBlogError(f"API Error (پس از {len(RETRY_DELAYS) + 1} تلاش): {last_error}")
