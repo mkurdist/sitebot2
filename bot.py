@@ -20,6 +20,7 @@ from handlers.gemini_products import router as gemini_products_router
 from handlers.gemini_articles import router as gemini_articles_router
 from handlers.products import router as products_router
 from handlers.orders import router as orders_router
+from handlers.admin_sync import router as admin_sync_router  # 🌟 اضافه شدن روتر همگام‌سازی
 
 # وارد کردن سرویس‌های ارتباطی ایزوله
 from services.database import db_service
@@ -201,6 +202,7 @@ async def main():
     dp.include_router(gemini_articles_router)   # پردازش مقالات هوشمند
     dp.include_router(products_router)          # پردازش محصولات دستی
     dp.include_router(orders_router)            # پردازش سفارشات
+    dp.include_router(admin_sync_router)        # 🌟 پردازش همگام‌سازی دیتابیس
     dp.include_router(webhook_router)           # پردازش دکمه‌های وب‌هوک
 
     app = web.Application()
