@@ -9,6 +9,7 @@ from states.article_states import GeminiArticleWizard
 from services.gemini_blog import generate_blog_titles, generate_blog_article
 from services.woocommerce import wc_service_instance as wc_service
 from services.wordpress import wp_service_instance as wp_service
+from services.database import db_service  # 🌟 اتصال دیتابیس اختصاصی ربات
 
 router = Router()
 
@@ -29,15 +30,22 @@ async def start_gemini_blog(message: Message, state: FSMContext):
     )
 
 # ==========================================
-# ۲. دریافت موضوع و پیشنهاد عناوین (Title Generation)
+# ۲. دریافت موضوع، بررسی حافظه سئو و پیشنهاد عناوین
 # ==========================================
 @router.message(GeminiArticleWizard.waiting_for_topic)
 async def process_topic_and_generate_titles(message: Message, state: FSMContext):
     topic = message.text.strip()
-    wait_msg = await message.answer("⏳ در حال ایده‌پردازی و ساخت عناوین سئوشده...")
+    wait_msg = await message.answer("⏳ در حال بررسی حافظه سئو و ایده‌پردازی عناوین...")
     
     try:
-        titles = await generate_blog_titles(topic)
+        # 🌟 واکشی کلمات کلیدی قفل‌شده از دیتابیس برای جلوگیری از همنوع‌خواری
+        pool = await db_service.get_pool()
+        locked_keywords = []
+        async with pool.acquire() as conn:
+            records = await conn.fetch('SELECT focus_keyword FROM seo_ledger WHERE focus_keyword IS NOT NULL')
+            locked_keywords = [r['focus_keyword'] for r in records]
+
+        titles = await generate_blog_titles(topic, locked_keywords)
         
         if not titles:
             await wait_msg.edit_text("❌ متأسفانه عنوانی تولید نشد. لطفاً موضوع دیگری امتحان کنید.")
@@ -52,7 +60,7 @@ async def process_topic_and_generate_titles(message: Message, state: FSMContext)
         
         await state.set_state(GeminiArticleWizard.waiting_for_title_selection)
         await wait_msg.edit_text(
-            "✨ <b>عناوین پیشنهادی Gemini آماده است!</b>\n\n"
+            "✨ <b>عناوین پیشنهادی ضد-تکرار Gemini آماده است!</b>\n\n"
             "روی بهترین عنوان کلیک کنید تا نگارش مقاله آغاز شود:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
             parse_mode="HTML"
@@ -63,7 +71,7 @@ async def process_topic_and_generate_titles(message: Message, state: FSMContext)
         await state.clear()
 
 # ==========================================
-# ۳. انتخاب عنوان، لینک‌سازی داخلی و نگارش مقاله
+# ۳. انتخاب عنوان، تزریق کاتالوگ و نگارش مقاله
 # ==========================================
 @router.callback_query(F.data.startswith("gbtitle_"), GeminiArticleWizard.waiting_for_title_selection)
 async def process_title_selection(callback: CallbackQuery, state: FSMContext, bot: Bot):
@@ -74,20 +82,26 @@ async def process_title_selection(callback: CallbackQuery, state: FSMContext, bo
     await state.update_data(selected_title=selected_title)
     wait_msg = await callback.message.edit_text(
         f"📝 <b>عنوان انتخاب شد:</b>\n{selected_title}\n\n"
-        "⏳ در حال واکشی محصولات سایت برای استخراج تصاویر و لینک‌سازی..."
+        "⏳ در حال واکشی کاتالوگ محصولات از دیتابیس اختصاصی (Supabase)..."
     )
     
     try:
-        recent_products = await wc_service.get_latest_products(per_page=15)
-        products_context = []
-        for p in recent_products:
-            images = p.get('images', [])
-            img_url = images[0]['src'] if images else ""
-            products_context.append({"name": p["name"], "url": p["permalink"], "image": img_url})
+        pool = await db_service.get_pool()
         
-        await wait_msg.edit_text("⏳ محصولات و تصاویر دریافت شد. Gemini در حال استدلال و نگارش مقاله می‌باشد (این مرحله ممکن است ۱ دقیقه طول بکشد)...")
+        # 🌟 ۱. واکشی کل کاتالوگ محصولات با اولویت محصولاتی که کمتر لینک گرفته‌اند
+        all_products = []
+        async with pool.acquire() as conn:
+            records = await conn.fetch('SELECT product_id, name, permalink, image_url FROM products ORDER BY mention_count ASC')
+            all_products = [dict(r) for r in records]
+            
+            # 🌟 ۲. واکشی مجدد کلمات کلیدی ممنوعه
+            seo_records = await conn.fetch('SELECT focus_keyword FROM seo_ledger WHERE focus_keyword IS NOT NULL')
+            locked_keywords = [r['focus_keyword'] for r in seo_records]
         
-        article_data = await generate_blog_article(selected_title, products_context)
+        await wait_msg.edit_text("⏳ کاتالوگ کامل سایت در میلی‌ثانیه دریافت شد. Gemini در حال استدلال، نگارش مقاله و انتخاب هوشمند محصولات می‌باشد (این مرحله ممکن است ۱ دقیقه طول بکشد)...")
+        
+        # ارسال کاتالوگ و محدودیت‌ها به هوش مصنوعی
+        article_data = await generate_blog_article(selected_title, all_products, locked_keywords)
         await state.update_data(article_data=article_data)
         
         preview_html = (
@@ -101,14 +115,18 @@ async def process_title_selection(callback: CallbackQuery, state: FSMContext, bo
         await bot.send_document(
             chat_id=callback.message.chat.id,
             document=BufferedInputFile(preview_html, filename="article_preview.html"),
-            caption="📄 پیش‌نمایش مقاله (همراه با لینک‌سازی‌ها و تصاویر)"
+            caption="📄 پیش‌نمایش مقاله (همراه با لینک‌سازی‌ها، تصاویر و بخش FAQ)"
         )
+        
+        # استخراج آیدی محصولاتی که هوش مصنوعی در متن استفاده کرده است
+        used_ids = article_data.get('used_product_ids', [])
         
         await state.set_state(GeminiArticleWizard.waiting_for_featured_image)
         await wait_msg.edit_text(
             f"✅ <b>مقاله با موفقیت تولید شد!</b>\n\n"
             f"🔑 کلمه کلیدی: <code>{article_data['focus_keyword']}</code>\n"
-            f"🔗 نامک (Slug): <code>{article_data['slug']}</code>\n\n"
+            f"🔗 نامک (Slug): <code>{article_data['slug']}</code>\n"
+            f"🎯 تعداد محصولات لینک‌شده: <b>{len(used_ids)}</b> مورد\n\n"
             f"🖼 <b>مرحله آخر:</b>\nبرای حفظ اصالت برند، لطفاً یک <b>عکس واقعی و باکیفیت</b> برای تصویر شاخص این مقاله ارسال کنید:",
             parse_mode="HTML"
         )
@@ -171,17 +189,18 @@ async def process_article_image(message: Message, state: FSMContext, bot: Bot):
         await wait_msg.edit_text(f"❌ خطا در آپلود تصویر یا دریافت دسته‌بندی:\n<code>{str(e)[:500]}</code>", parse_mode="HTML")
 
 # ==========================================
-# ۵. انتخاب دسته و ساخت مقاله در سایت
+# ۵. انتخاب دسته، ساخت مقاله و به‌روزرسانی دیتابیس سئو
 # ==========================================
 @router.callback_query(F.data.startswith("gbcat_"), GeminiArticleWizard.waiting_for_category)
 async def process_category_and_create_post(callback: CallbackQuery, state: FSMContext):
     cat_id = int(callback.data.split("_")[1])
-    wait_msg = await callback.message.edit_text("⏳ در حال ساخت ساختار نهایی مقاله، تزریق برچسب‌ها و سئو در وردپرس...")
+    wait_msg = await callback.message.edit_text("⏳ در حال ساخت ساختار نهایی مقاله و تزریق برچسب‌ها در وردپرس...")
     
     try:
         data = await state.get_data()
         article_data = data['article_data']
         selected_title = data['selected_title']
+        tags_str = "، ".join(article_data.get('tags', []))
         
         # ۱. تبدیل نام برچسب‌ها به آیدی عددی در وردپرس
         tag_ids = []
@@ -202,14 +221,33 @@ async def process_category_and_create_post(callback: CallbackQuery, state: FSMCo
             "status": "draft",
             "slug": article_data['slug'],
             "categories": [cat_id],
-            "tags": tag_ids,                   # 🌟 برچسب‌ها به مقاله متصل شدند
+            "tags": tag_ids,
             "featured_media": data['featured_media_id'],
             "meta": meta_data
         }
         
+        # ۲. ایجاد پیش‌نویس در وردپرس
         post_result = await wp_service.create_post(payload)
         post_id = post_result['id']
         post_link = post_result.get('link', '')
+        
+        # 🌟 ۳. ثبت کلمه کلیدی در حافظه سئو (SEO Ledger) و آپدیت شمارنده محصولات
+        try:
+            pool = await db_service.get_pool()
+            async with pool.acquire() as conn:
+                # قفل کردن کلمه کلیدی جدید
+                await conn.execute('''
+                    INSERT INTO seo_ledger (focus_keyword, slug, title, tags)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (focus_keyword) DO NOTHING
+                ''', article_data['focus_keyword'], article_data['slug'], selected_title, tags_str)
+                
+                # اضافه کردن به تعداد منشن محصولاتی که هوش مصنوعی استفاده کرد
+                used_ids = article_data.get('used_product_ids', [])
+                for pid in used_ids:
+                    await conn.execute('UPDATE products SET mention_count = mention_count + 1 WHERE product_id = $1', pid)
+        except Exception:
+            pass # ایزوله کردن خطاهای احتمالی دیتابیس برای جلوگیری از توقف ربات
         
         await state.update_data(post_id=post_id, post_title=selected_title, post_link=post_link)
         await state.set_state(GeminiArticleWizard.waiting_for_publish_action)
@@ -219,13 +257,11 @@ async def process_category_and_create_post(callback: CallbackQuery, state: FSMCo
             [InlineKeyboardButton(text="🗑 انتقال به زباله‌دان", callback_data="gbaction_trash")]
         ])
         
-        tags_str = "، ".join(article_data.get('tags', []))
-        
         await wait_msg.edit_text(
             f"🎉 <b>مقاله شما با موفقیت به عنوان پیش‌نویس در سایت ایجاد شد!</b>\n\n"
             f"🏷 <b>عنوان:</b> {selected_title}\n"
-            f"🔑 <b>تصویر شاخص:</b> متصل شد و سئو گردید.\n"
-            f"📂 <b>دسته‌بندی:</b> با موفقیت تخصیص یافت.\n"
+            f"🧠 <b>وضعیت سئو:</b> کلمه کلیدی در دیتابیس قفل شد.\n"
+            f"🔗 <b>بک‌لینک‌ها:</b> شمارنده محصولات آپدیت شد.\n"
             f"🔖 <b>برچسب‌ها:</b> {tags_str}\n\n"
             f"انتخاب کنید:",
             reply_markup=kb, parse_mode="HTML"
