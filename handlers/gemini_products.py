@@ -11,7 +11,6 @@ from aiogram.types import (
     BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message,
 )
 
-# ایمپورت‌های معماری جدید
 from utils.security import MENU_BUTTONS 
 from services import gemini as gm
 from services.woocommerce import wc_service_instance as wc_service
@@ -275,16 +274,30 @@ async def gp_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot):
     d["busy"] = True
     p = d["result"].product
     n = len(d["images"])
-    wait_msg = await callback.message.answer("⏳ در حال ارسال به سایت…")
+    wait_msg = await callback.message.answer("⏳ در حال آپلود تصاویر با نام‌های سئوشده و ایجاد محصول...")
 
     try:
-        slug = p["slug"]
+        # دریافت نامک تولید شده توسط هوش مصنوعی
+        slug = p.get("slug", "product")
+        alt_texts = p.get("image_alt_texts", [])
+        
+        # 🌟 آپلود و سئوی پویای تصاویر (نام‌گذاری به صورت slug-1, slug-2, ...)
         for i, img in enumerate(d["images"]):
             if i in d["media"]: continue
-            img_title = slug if i == 0 else f"{slug}-{i + 1}"
-            d["media"][i] = await wp_service.upload_media(img["bytes"], f"{img_title}.{img['ext']}", p["image_alt_texts"][i], img_title)
+            img_title = f"{slug}-{i + 1}"
+            
+            # استخراج امن تگ Alt برای هر عکس
+            alt_text = alt_texts[i] if i < len(alt_texts) else f"{p.get('title')} - تصویر {i+1}"
+            
+            d["media"][i] = await wp_service.upload_media(
+                img["bytes"], 
+                f"{img_title}.{img['ext']}", 
+                alt_text, 
+                img_title
+            )
 
-        images_payload = [{"id": d["media"][i], "name": p["image_alt_texts"][i], "alt": p["image_alt_texts"][i]} for i in range(n)]
+        # 🌟 فرمت‌بندی آرایه تصاویر برای ووکامرس (اولی = عکس اصلی / بقیه = گالری)
+        images_payload = [{"id": d["media"][i]} for i in range(n)]
         
         payload = {
             "name": p["title"], "type": "simple", "status": "draft", "slug": p["slug"],
@@ -303,7 +316,9 @@ async def gp_confirm(callback: CallbackQuery, state: FSMContext, bot: Bot):
         _drop_draft(uid)
         
         await wait_msg.edit_text(
-            f"✅ <b>محصول به‌صورت پیش‌نویس ساخته شد!</b>\n\n👇 از داشبورد قیمت و دسته‌بندی را مشخص کنید:",
+            f"✅ <b>محصول به‌صورت پیش‌نویس ساخته شد!</b>\n"
+            f"🖼 <b>مدیریت تصاویر:</b> عکس اول به عنوان اصلی و مابقی در گالری با نام سئوشده ذخیره شدند.\n\n"
+            f"👇 از داشبورد قیمت و دسته‌بندی را مشخص کنید:",
             reply_markup=get_dashboard_keyboard(result["id"], p["title"]), parse_mode="HTML"
         )
     except Exception as e:
