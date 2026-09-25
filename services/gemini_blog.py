@@ -1,74 +1,93 @@
 import os
 import json
+import re
 import aiohttp
 import asyncio
 from dotenv import load_dotenv
 
 load_dotenv()
 
-def _api_key(): return os.getenv("GEMINI_API_KEY", "").strip()
-def _model(): return os.getenv("GEMINI_MODEL", "gemini-3.6-flash").strip()
-def _base(): return os.getenv("GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+def _api_keys() -> list:
+    keys_str = os.getenv("GEMINI_API_KEYS", "")
+    if not keys_str:
+        keys_str = os.getenv("GEMINI_API_KEY", "")
+    return [k.strip() for k in keys_str.split(",") if k.strip()]
 
-class GeminiBlogError(Exception):
-    pass
+def _model() -> str: return os.getenv("GEMINI_MODEL", "gemini-3.6-flash").strip()
+def _base() -> str: return os.getenv("GEMINI_API_BASE", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
 
-# تنظیمات زمان‌بندی برای تلاش مجدد در صورت شلوغی سرور (به ثانیه)
+class GeminiBlogError(Exception): pass
 RETRY_DELAYS = [5, 15, 40]
 
+# متد مشترک ارسال با سیستم استخر کلید و مسیریابی آبشاری
+async def _execute_waterfall_request(prompt: str, schema: dict, task_type: str = "heavy") -> dict:
+    keys = _api_keys()
+    if not keys: raise GeminiBlogError("هیچ کلیدی تنظیم نشده است.")
+
+    # تخصیص هوشمند وظایف: کارهای سبک فقط به مدل لایت می‌روند.
+    primary_model = _model()
+    lite_model = "gemini-3.5-flash-lite"
+    
+    if task_type == "light":
+        models_to_try = [lite_model]
+    else:
+        models_to_try = [primary_model, lite_model] if primary_model != lite_model else [primary_model]
+
+    last_error = "نامشخص"
+    
+    for model_name in models_to_try:
+        for key in keys:
+            for attempt in range(len(RETRY_DELAYS) + 1):
+                try:
+                    url = f"{_base()}/models/{model_name}:generateContent"
+                    headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
+                    body = {
+                        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                        "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema, "maxOutputTokens": 8000}
+                    }
+                    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=180)) as session:
+                        async with session.post(url, json=body, headers=headers) as resp:
+                            if resp.status == 200:
+                                data = await resp.json()
+                                out = data["candidates"][0]["content"]["parts"][0]["text"]
+                                return json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", out).strip())
+                            
+                            if resp.status in (429, 400, 401, 403, 404):
+                                last_error = f"Limit/Auth ({resp.status}) on {model_name}"
+                                break 
+                            
+                            last_error = f"Server Error {resp.status}"
+                except Exception as e:
+                    last_error = f"Connection Error: {str(e)[:50]}"
+                
+                if attempt < len(RETRY_DELAYS):
+                    await asyncio.sleep(RETRY_DELAYS[attempt])
+
+    raise GeminiBlogError(f"خطای سراسری در تمام کلیدها و مدل‌ها: {last_error}")
+
+
 # ==========================================
-# ۱. تولید عناوین جذاب (ایده‌پردازی)
+# ۱. تولید عناوین جذاب (کار سبک -> فقط ارسال به مدل Lite)
 # ==========================================
 async def generate_blog_titles(topic: str) -> list:
-    url = f"{_base()}/models/{_model()}:generateContent"
-    headers = {"x-goog-api-key": _api_key(), "Content-Type": "application/json"}
-    
     prompt = (
         f"تو یک متخصص سئو و کپی‌رایتر سایت 'شهر سفال' هستی. "
         f"برای موضوع '{topic}' دقیقاً ۵ عنوان مقاله بسیار جذاب، کلیک‌خور و سئوشده (بین ۵۰ تا ۶۵ کاراکتر) پیشنهاد بده. "
         f"عناوین نباید زرد باشند، بلکه کاربردی و مرتبط با سفال، سرامیک یا دکوراسیون باشند."
     )
-    
     schema = {
         "type": "OBJECT",
-        "properties": {
-            "titles": {"type": "ARRAY", "items": {"type": "STRING"}}
-        },
+        "properties": {"titles": {"type": "ARRAY", "items": {"type": "STRING"}}},
         "required": ["titles"]
     }
     
-    body = {
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema}
-    }
-    
-    last_error = ""
-    for attempt in range(len(RETRY_DELAYS) + 1):
-        try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as session:
-                async with session.post(url, json=body, headers=headers) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        content = data["candidates"][0]["content"]["parts"][0]["text"]
-                        return json.loads(content).get("titles", [])
-                    
-                    last_error = await resp.text()
-        except Exception as e:
-            last_error = str(e)
-            
-        if attempt < len(RETRY_DELAYS):
-            await asyncio.sleep(RETRY_DELAYS[attempt])
-            
-    raise GeminiBlogError(f"API Error (پس از {len(RETRY_DELAYS) + 1} تلاش): {last_error}")
+    result = await _execute_waterfall_request(prompt, schema, task_type="light")
+    return result.get("titles", [])
 
 # ==========================================
-# ۲. نگارش مقاله با لینک‌سازی داخلی و خارجی
+# ۲. نگارش مقاله با لینک‌سازی (کار سنگین -> ارسال به مدل اصلی و در صورت نیاز Fallback)
 # ==========================================
 async def generate_blog_article(title: str, products_context: list) -> dict:
-    url = f"{_base()}/models/{_model()}:generateContent"
-    headers = {"x-goog-api-key": _api_key(), "Content-Type": "application/json"}
-    
-    # ساخت متن زمینه از محصولات سایت برای لینک‌سازی داخلی
     context_str = "\n".join([f"- {p['name']} (URL: {p['url']})" for p in products_context])
     
     prompt = f"""
@@ -82,7 +101,7 @@ async def generate_blog_article(title: str, products_context: list) -> dict:
        فرمت: <a href="URL">نام یا کلمه کلیدی مرتبط</a>
        محصولات مجاز برای لینک‌سازی:
        {context_str}
-    ۴. **لینک‌سازی خارجی:** یک لینک خروجی Nofollow به یک منبع معتبر جهانی (مثل ویکی‌پدیا) درباره مفاهیم پایه (مثل تاریخچه سفال یا مواد سرامیک) در یک جای طبیعی از متن قرار بده. 
+    ۴. **لینک‌سازی خارجی:** یک لینک خروجی Nofollow به یک منبع معتبر جهانی (مثل ویکی‌پدیا) درباره مفاهیم پایه در یک جای طبیعی از متن قرار بده. 
        فرمت: <a href="..." rel="nofollow" target="_blank">کلمه</a>
     ۵. پاراگراف‌ها کوتاه و خوانا باشند. محتوا نباید کپی یا رباتی به نظر برسد.
     """
@@ -90,35 +109,13 @@ async def generate_blog_article(title: str, products_context: list) -> dict:
     schema = {
         "type": "OBJECT",
         "properties": {
-            "focus_keyword": {"type": "STRING", "description": "کلمه کلیدی اصلی (۲ تا ۴ کلمه)"},
-            "seo_title": {"type": "STRING", "description": "عنوان سئو (حداکثر ۶۵ کاراکتر)"},
-            "meta_description": {"type": "STRING", "description": "توضیحات متا (حدود ۱۴۰ کاراکتر)"},
-            "slug": {"type": "STRING", "description": "نامک انگلیسی با خط تیره (kebab-case)"},
-            "content_html": {"type": "STRING", "description": "محتوای کامل HTML مقاله همراه با لینک‌ها"}
+            "focus_keyword": {"type": "STRING"},
+            "seo_title": {"type": "STRING"},
+            "meta_description": {"type": "STRING"},
+            "slug": {"type": "STRING"},
+            "content_html": {"type": "STRING"}
         },
         "required": ["focus_keyword", "seo_title", "meta_description", "slug", "content_html"]
     }
     
-    body = {
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema, "maxOutputTokens": 8000}
-    }
-    
-    last_error = ""
-    for attempt in range(len(RETRY_DELAYS) + 1):
-        try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=180)) as session:
-                async with session.post(url, json=body, headers=headers) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        content = data["candidates"][0]["content"]["parts"][0]["text"]
-                        return json.loads(content)
-                    
-                    last_error = await resp.text()
-        except Exception as e:
-            last_error = str(e)
-            
-        if attempt < len(RETRY_DELAYS):
-            await asyncio.sleep(RETRY_DELAYS[attempt])
-            
-    raise GeminiBlogError(f"API Error (پس از {len(RETRY_DELAYS) + 1} تلاش): {last_error}")
+    return await _execute_waterfall_request(prompt, schema, task_type="heavy")
