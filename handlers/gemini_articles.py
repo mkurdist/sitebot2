@@ -3,6 +3,7 @@ import re
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, BufferedInputFile
 from aiogram.fsm.context import FSMContext
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from states.article_states import GeminiArticleWizard
 from services.gemini_blog import generate_blog_titles, generate_blog_article
@@ -36,7 +37,6 @@ async def process_topic_and_generate_titles(message: Message, state: FSMContext)
     wait_msg = await message.answer("⏳ در حال ایده‌پردازی و ساخت عناوین سئوشده...")
     
     try:
-        # فراخوانی سرویس ایزوله جمینای
         titles = await generate_blog_titles(topic)
         
         if not titles:
@@ -45,7 +45,6 @@ async def process_topic_and_generate_titles(message: Message, state: FSMContext)
 
         kb = []
         for i, title in enumerate(titles):
-            # آیدی کوتاه برای دکمه می‌سازیم و عنوان کامل را در state ذخیره می‌کنیم
             await state.update_data(**{f"title_{i}": title})
             kb.append([InlineKeyboardButton(text=title, callback_data=f"gbtitle_{i}")])
             
@@ -75,23 +74,24 @@ async def process_title_selection(callback: CallbackQuery, state: FSMContext, bo
     await state.update_data(selected_title=selected_title)
     wait_msg = await callback.message.edit_text(
         f"📝 <b>عنوان انتخاب شد:</b>\n{selected_title}\n\n"
-        "⏳ در حال واکشی محصولات سایت برای لینک‌سازی داخلی..."
+        "⏳ در حال واکشی محصولات سایت برای استخراج تصاویر و لینک‌سازی..."
     )
     
     try:
-        # واکشی ۱۵ محصول آخر برای ساخت Context لینک‌سازی داخلی
+        # واکشی محصولات همراه با تصویر شاخص برای قرارگیری در وسط مقاله
         recent_products = await wc_service.get_latest_products(per_page=15)
-        products_context = [
-            {"name": p["name"], "url": p["permalink"]} for p in recent_products
-        ]
+        products_context = []
+        for p in recent_products:
+            images = p.get('images', [])
+            img_url = images[0]['src'] if images else ""
+            products_context.append({"name": p["name"], "url": p["permalink"], "image": img_url})
         
-        await wait_msg.edit_text("⏳ محصولات دریافت شد. Gemini در حال نگارش مقاله و سئو می‌باشد (این مرحله ممکن است ۱ دقیقه طول بکشد)...")
+        await wait_msg.edit_text("⏳ محصولات و تصاویر دریافت شد. Gemini در حال نگارش مقاله می‌باشد (این مرحله ممکن است ۱ دقیقه طول بکشد)...")
         
         # تولید مقاله کامل
         article_data = await generate_blog_article(selected_title, products_context)
         await state.update_data(article_data=article_data)
         
-        # ارسال فایل پیش‌نمایش HTML
         preview_html = (
             f"<!doctype html><html lang='fa' dir='rtl'><head><meta charset='utf-8'>"
             f"<title>{article_data['seo_title']}</title></head>"
@@ -103,7 +103,7 @@ async def process_title_selection(callback: CallbackQuery, state: FSMContext, bo
         await bot.send_document(
             chat_id=callback.message.chat.id,
             document=BufferedInputFile(preview_html, filename="article_preview.html"),
-            caption="📄 پیش‌نمایش مقاله (همراه با لینک‌سازی‌ها)"
+            caption="📄 پیش‌نمایش مقاله (همراه با لینک‌سازی‌ها و تصاویر)"
         )
         
         await state.set_state(GeminiArticleWizard.waiting_for_featured_image)
@@ -111,8 +111,7 @@ async def process_title_selection(callback: CallbackQuery, state: FSMContext, bo
             f"✅ <b>مقاله با موفقیت تولید شد!</b>\n\n"
             f"🔑 کلمه کلیدی: <code>{article_data['focus_keyword']}</code>\n"
             f"🔗 نامک (Slug): <code>{article_data['slug']}</code>\n\n"
-            f"🖼 <b>مرحله آخر:</b>\nبرای حفظ اصالت برند، لطفاً یک <b>عکس واقعی و باکیفیت</b> برای تصویر شاخص این مقاله ارسال کنید "
-            f"(ربات به صورت خودکار عکس را بر اساس کلمه کلیدی سئو کرده و روی سایت آپلود می‌کند):",
+            f"🖼 <b>مرحله آخر:</b>\nبرای حفظ اصالت برند، لطفاً یک <b>عکس واقعی و باکیفیت</b> برای تصویر شاخص این مقاله ارسال کنید:",
             parse_mode="HTML"
         )
         
@@ -121,7 +120,7 @@ async def process_title_selection(callback: CallbackQuery, state: FSMContext, bo
         await state.clear()
 
 # ==========================================
-# ۴. دریافت عکس واقعی، سئوی خودکار عکس و آپلود در سایت
+# ۴. دریافت عکس واقعی، سئوی عکس و دریافت دسته‌بندی‌ها
 # ==========================================
 @router.message(GeminiArticleWizard.waiting_for_featured_image, F.photo | F.document)
 async def process_article_image(message: Message, state: FSMContext, bot: Bot):
@@ -135,26 +134,59 @@ async def process_article_image(message: Message, state: FSMContext, bot: Bot):
         await message.answer("❌ لطفاً یک تصویر معتبر ارسال کنید.")
         return
 
-    wait_msg = await message.answer("⏳ در حال سئوی خودکار تصویر، آپلود در وردپرس و ساخت پیش‌نویس مقاله...")
+    wait_msg = await message.answer("⏳ در حال آپلود تصویر و دریافت دسته‌بندی‌های سایت...")
+    
+    try:
+        data = await state.get_data()
+        article_data = data['article_data']
+        
+        # آپلود تصویر و سئو
+        file_info = await bot.get_file(file_id)
+        ext = file_info.file_path.split('.')[-1].lower() if '.' in file_info.file_path else 'jpg'
+        file_bytes = io.BytesIO()
+        await bot.download_file(file_info.file_path, file_bytes)
+        
+        media_id = await wp_service.upload_media(
+            file_bytes.getvalue(), 
+            f"{article_data['slug']}-featured.{ext}", 
+            article_data['focus_keyword'], 
+            article_data['focus_keyword']
+        )
+        await state.update_data(featured_media_id=media_id)
+        
+        # دریافت دسته‌بندی‌های بلاگ از وردپرس
+        wp_categories = await wp_service._request("GET", "wp/v2/categories?per_page=100")
+        
+        builder = InlineKeyboardBuilder()
+        for cat in wp_categories:
+            builder.button(text=cat['name'], callback_data=f"gbcat_{cat['id']}")
+                
+        builder.button(text="❌ لغو عملیات", callback_data="gb_cancel")
+        builder.adjust(1)
+        
+        await state.set_state(GeminiArticleWizard.waiting_for_category)
+        await wait_msg.edit_text(
+            "✅ <b>تصویر شاخص با موفقیت آپلود و سئو شد.</b>\n\n"
+            "🗂 لطفاً <b>دسته‌بندی مقاله</b> را از لیست زیر انتخاب کنید:",
+            reply_markup=builder.as_markup(), parse_mode="HTML"
+        )
+        
+    except Exception as e:
+        await wait_msg.edit_text(f"❌ خطا در آپلود تصویر یا دریافت دسته‌بندی:\n<code>{str(e)[:500]}</code>", parse_mode="HTML")
+
+# ==========================================
+# ۵. انتخاب دسته و ساخت مقاله در سایت
+# ==========================================
+@router.callback_query(F.data.startswith("gbcat_"), GeminiArticleWizard.waiting_for_category)
+async def process_category_and_create_post(callback: CallbackQuery, state: FSMContext):
+    cat_id = int(callback.data.split("_")[1])
+    wait_msg = await callback.message.edit_text("⏳ در حال ساخت ساختار نهایی مقاله و سئو در وردپرس...")
     
     try:
         data = await state.get_data()
         article_data = data['article_data']
         selected_title = data['selected_title']
         
-        # ۱. دانلود عکس از تلگرام
-        file_info = await bot.get_file(file_id)
-        ext = file_info.file_path.split('.')[-1].lower() if '.' in file_info.file_path else 'jpg'
-        file_bytes = io.BytesIO()
-        await bot.download_file(file_info.file_path, file_bytes)
-        
-        # ۲. سئوی خودکار نام و Alt عکس (استفاده از slug و کلمه کلیدی)
-        seo_filename = f"{article_data['slug']}-featured.{ext}"
-        alt_text = article_data['focus_keyword']
-        
-        media_id = await wp_service.upload_media(file_bytes.getvalue(), seo_filename, alt_text, alt_text)
-        
-        # ۳. ساخت پست وردپرس با تمام امکانات سئو (Rank Math)
         meta_data = {
             "rank_math_focus_keyword": article_data['focus_keyword'],
             "rank_math_title": article_data['seo_title'],
@@ -166,7 +198,8 @@ async def process_article_image(message: Message, state: FSMContext, bot: Bot):
             "content": article_data['content_html'],
             "status": "draft",
             "slug": article_data['slug'],
-            "featured_media": media_id,
+            "categories": [cat_id],
+            "featured_media": data['featured_media_id'],
             "meta": meta_data
         }
         
@@ -177,7 +210,6 @@ async def process_article_image(message: Message, state: FSMContext, bot: Bot):
         await state.update_data(post_id=post_id, post_title=selected_title, post_link=post_link)
         await state.set_state(GeminiArticleWizard.waiting_for_publish_action)
         
-        # ۴. داشبورد نهایی
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🚀 انتشار عمومی در سایت", callback_data="gbaction_publish")],
             [InlineKeyboardButton(text="🗑 انتقال به زباله‌دان", callback_data="gbaction_trash")]
@@ -186,23 +218,23 @@ async def process_article_image(message: Message, state: FSMContext, bot: Bot):
         await wait_msg.edit_text(
             f"🎉 <b>مقاله شما با موفقیت به عنوان پیش‌نویس در سایت ایجاد شد!</b>\n\n"
             f"🏷 <b>عنوان:</b> {selected_title}\n"
-            f"🔑 <b>تصویر شاخص:</b> متصل شد و سئو گردید.\n\n"
+            f"🔑 <b>تصویر شاخص:</b> متصل شد و سئو گردید.\n"
+            f"📂 <b>دسته‌بندی:</b> با موفقیت تخصیص یافت.\n\n"
             f"انتخاب کنید:",
             reply_markup=kb, parse_mode="HTML"
         )
         
     except Exception as e:
-        await wait_msg.edit_text(f"❌ خطا در آپلود تصویر یا ساخت مقاله:\n<code>{str(e)[:500]}</code>", parse_mode="HTML")
+        await wait_msg.edit_text(f"❌ خطا در ساخت مقاله:\n<code>{str(e)[:300]}</code>", parse_mode="HTML")
 
 # ==========================================
-# ۵. داشبورد نهایی (انتشار / زباله‌دان)
+# ۶. داشبورد نهایی (انتشار / زباله‌دان)
 # ==========================================
 @router.callback_query(F.data.startswith("gbaction_"), GeminiArticleWizard.waiting_for_publish_action)
 async def process_publish_action(callback: CallbackQuery, state: FSMContext):
     action = callback.data.split("_")[1]
     data = await state.get_data()
     post_id = data['post_id']
-    post_title = data['post_title']
     post_link = data['post_link']
     
     try:
