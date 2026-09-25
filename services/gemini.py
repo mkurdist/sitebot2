@@ -33,13 +33,17 @@ class GeminiError(Exception): pass
 class GeminiParseError(GeminiError): pass
 
 # ==========================================
-# پرامپت سیستمی
+# پرامپت سیستمی (ارتقایافته برای تحلیل چندگانه تصاویر)
 # ==========================================
 SYSTEM_PROMPT = """
 تو یک متخصص ارشد SEO، کپی‌رایتینگ فروشگاهی، تولید محتوای محصول و WooCommerce هستی.
 وظیفه‌ات: با دریافت عکس(های) یک محصول و مشخصات خام آن، برای «همان یک محصول» محتوایی کامل، حرفه‌ای، طبیعی، یونیک و SEO-Friendly تولید کنی.
 
-برند فروشگاه: «سیتی سفال» — نام انگلیسی: CITY SOFAL.
+برند فروشگاه: «شهر سفال» — نام انگلیسی: CITY SOFAL.
+
+## قانون تحلیل تصاویر (Multi-Vision) و سئو
+- من ممکن است چندین عکس از زوایای مختلف محصول برایت بفرستم. باید تمام عکس‌ها را با دقت اسکن کنی و جزئیات ظاهری، بافت (Texture)، رنگ‌بندی، طرح‌ها (مثل نقطه‌کوبی یا لعاب) و فرم محصول را از تلفیق این عکس‌ها استخراج کرده و در متن محاوره‌ای و توضیحات کامل به کار ببری.
+- برای هر عکسی که دریافت می‌کنی، باید یک متن جایگزین (Alt Text) دقیق و سئوشده تولید کنی و در آرایه image_alt_texts قرار دهی. تعداد این Alt ها باید دقیقاً برابر با تعداد عکس‌های دریافتی باشد.
 
 ## قانون اطلاعات محصول
 - هرچه کاربر می‌دهد اطلاعات واقعی است. هرچه نداده، حدس نزن.
@@ -47,17 +51,14 @@ SYSTEM_PROMPT = """
 
 ## Focus Keyword
 - یک کلمه‌ی کلیدی اختصاصی، ۲ تا ۵ کلمه و کاملا مرتبط.
-- چگالی کلمه کلیدی در متن اصلی (full_description_html) باید حدود ۱ درصد باشد (پخش شده در سراسر متن).
+- چگالی کلمه کلیدی در متن اصلی باید حدود ۱ درصد باشد (پخش شده در سراسر متن).
 
 ## حجم و کیفیت
-- متن اصلی (full_description_html) به هیچ وجه نباید کمتر از ۷۵۰ کلمه باشد (ایده‌آل بین ۷۵۰ تا ۱۰۰۰ کلمه).
+- متن اصلی (full_description_html) به هیچ وجه نباید کمتر از ۷۵۰ کلمه باشد.
 - استفاده از تگ‌های <h2> برای تیتربندی.
 
 ## برندینگ
-نام‌های «سیتی سفال» یا «CITY SOFAL» را حداقل یک بار به صورت طبیعی در متن استفاده کن.
-
-## ممنوع
-آوردن هرگونه لینک، آیدی شبکه‌های اجتماعی، شماره تماس، و جملات کلیشه‌ای مثل "بهترین در ایران" اکیدا ممنوع است.
+نام‌های «شهر سفال» یا «CITY SOFAL» را حداقل یک بار به صورت طبیعی در متن استفاده کن.
 
 ## قالب خروجی (فقط JSON)
 - focus_keyword: کلمه‌ی کلیدی.
@@ -65,14 +66,7 @@ SYSTEM_PROMPT = """
 - short_description: توضیحات کوتاه.
 - conversational_text: متن محاوره‌ای جذاب.
 - full_description_html: HTML استاندارد فقط با تگ‌های <h2> <h3> <p> <strong> <ul> <li>.
-- specs: ردیف‌های جدول مشخصات. **بسیار مهم: جدول تو باید دقیقاً شامل این ۷ سطر باشد و هیچ سطری اضافه یا کم نشود:**
-  1. اسم محصول
-  2. جنس
-  3. رنگ
-  4. وزن
-  5. ابعاد
-  6. ارسال
-  7. بسته بندی
+- specs: ردیف‌های جدول مشخصات. جدول تو باید دقیقاً شامل این ۷ سطر باشد: اسم محصول، جنس، رنگ، وزن، ابعاد، ارسال، بسته بندی.
 - meta_title: عنوان سئو.
 - meta_description: توضیحات متا.
 - slug: نامک انگلیسی.
@@ -209,7 +203,7 @@ def build_preview_document(p: dict) -> bytes:
             f"<h1>{title}</h1><small>پیش‌نمایش توضیح کوتاه</small>{build_short_html(p)}<hr>{build_description_html(p)}</body></html>").encode("utf-8")
 
 # ==========================================
-# استخر کلیدها و مسیریابی آبشاری (Enterprise Waterfall Routing)
+# استخر کلیدها و مسیریابی آبشاری
 # ==========================================
 async def _post_generate(parts: list) -> dict:
     keys = _api_keys()
@@ -239,13 +233,10 @@ async def _post_generate(parts: list) -> dict:
                                 out = data["candidates"][0]["content"]["parts"][0]["text"]
                                 return json.loads(re.sub(r"^```(?:json)?\s*|\s*```$", "", out).strip())
                             
-                            # ارور ۴۲۹ (تکمیل ظرفیت) یا ارورهای دسترسی (۴۰۰، ۴۰۱، ۴۰۳، ۴۰۴)
-                            # در این حالت نیازی به صبر کردن نیست، مستقیماً به کلید بعدی می‌رویم
                             if resp.status in (429, 400, 401, 403, 404):
                                 last_error = f"Limit/Auth ({resp.status}) on {model_name} with key ending in {key[-4:]}"
                                 break 
                             
-                            # ارورهای ۵۰۰ سروری -> با همین کلید دوباره تلاش می‌کنیم
                             last_error = f"Server Error {resp.status}"
                 except Exception as e:
                     last_error = f"Connection Error: {str(e)[:50]}"
@@ -271,6 +262,7 @@ class GenResult:
 
 async def generate_product(specs_text: str, images: list, *, existing: Optional[list] = None, instruction: Optional[str] = None, previous: Optional[dict] = None, on_progress: Optional[Callable[[str], Awaitable[None]]] = None) -> GenResult:
     base_text = f"مشخصات:\n{specs_text}\nمحصولات قبلی:\n{existing}"
+    # در اینجا تمام عکس‌ها به ترتیب در قالب یک لیست به هوش مصنوعی پاس داده می‌شوند
     img_parts = [{"inlineData": {"mimeType": m, "data": base64.b64encode(d).decode("ascii")}} for d, m in images]
     
     best = None
