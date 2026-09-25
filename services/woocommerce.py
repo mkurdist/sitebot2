@@ -17,6 +17,17 @@ class WooCommerceService:
         if self._session and not self._session.closed:
             await self._session.close()
 
+    # 🌟 متد جدید برای دریافت محصولات با صفحه‌بندی (مخصوص همگام‌سازی دیتابیس)
+    async def get_products(self, page=1, per_page=20):
+        url = f"{self.base_url}/wp-json/wc/v3/products"
+        params = {"per_page": per_page, "page": page}
+        session = await self.get_session()
+        async with session.get(url, params=params) as response:
+            if response.status != 200:
+                text = await response.text()
+                raise Exception(f"WC API Error {response.status}: {text}")
+            return await response.json()
+
     async def get_latest_products(self, per_page=3):
         url = f"{self.base_url}/wp-json/wc/v3/products"
         params = {"per_page": per_page, "orderby": "date", "order": "desc"}
