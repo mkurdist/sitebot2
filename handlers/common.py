@@ -14,7 +14,8 @@ async def cmd_start(message: Message):
         keyboard=[
             [KeyboardButton(text="🤖 محصول با Gemini"), KeyboardButton(text="⚡ افزودن خودکار (AI)")],
             [KeyboardButton(text="➕ محصول جدید"), KeyboardButton(text="🛍 محصولات سایت")],
-            [KeyboardButton(text="📝 مقاله جدید"), KeyboardButton(text="✏️ ویرایش مقاله")],
+            # دکمه مقاله به نسخه Gemini تغییر یافت
+            [KeyboardButton(text="📝 مقاله با Gemini"), KeyboardButton(text="✏️ ویرایش مقاله")],
             [KeyboardButton(text="📦 آخرین سفارش‌ها"), KeyboardButton(text="⚙️ تنظیمات")]
         ],
         resize_keyboard=True,
