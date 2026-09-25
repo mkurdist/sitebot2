@@ -25,8 +25,8 @@ async def start_db_sync(message: Message):
 
     while True:
         try:
-            # واکشی محصولات از ووکامرس (صفحه به صفحه)
-            products = await wc_service._request("GET", "products", params={"per_page": per_page, "page": page})
+            # استفاده از متد جدید برای واکشی محصولات
+            products = await wc_service.get_products(page=page, per_page=per_page)
             
             if not products:
                 break # محصولات تمام شد
@@ -41,7 +41,7 @@ async def start_db_sync(message: Message):
                     images = p.get('images', [])
                     p_image = images[0]['src'] if images else ""
                     
-                    # ذخیره یا آپدیت در دیتابیس (mention_count صفر می‌ماند تا در مقالات استفاده شود)
+                    # ذخیره یا آپدیت در دیتابیس
                     await conn.execute('''
                         INSERT INTO products (product_id, name, slug, permalink, image_url, mention_count)
                         VALUES ($1, $2, $3, $4, $5, 0)
@@ -51,7 +51,7 @@ async def start_db_sync(message: Message):
                     
                     total_synced += 1
             
-            # 🌟 ۳ ثانیه استراحت مطلق برای محافظت از CPU و RAM هاست وردپرس شما
+            # ۳ ثانیه استراحت مطلق برای محافظت از سرور
             await asyncio.sleep(3)
             page += 1
             
