@@ -155,7 +155,7 @@ async def process_article_image(message: Message, state: FSMContext, bot: Bot):
         await state.update_data(featured_media_id=media_id)
         
         # دریافت دسته‌بندی‌های بلاگ از وردپرس
-        wp_categories = await wp_service._request("GET", "wp/v2/categories?per_page=100")
+        wp_categories = await wp_service.get_categories()
         
         builder = InlineKeyboardBuilder()
         for cat in wp_categories:
