@@ -78,7 +78,6 @@ async def process_title_selection(callback: CallbackQuery, state: FSMContext, bo
     )
     
     try:
-        # واکشی محصولات همراه با تصویر شاخص برای قرارگیری در وسط مقاله
         recent_products = await wc_service.get_latest_products(per_page=15)
         products_context = []
         for p in recent_products:
@@ -86,9 +85,8 @@ async def process_title_selection(callback: CallbackQuery, state: FSMContext, bo
             img_url = images[0]['src'] if images else ""
             products_context.append({"name": p["name"], "url": p["permalink"], "image": img_url})
         
-        await wait_msg.edit_text("⏳ محصولات و تصاویر دریافت شد. Gemini در حال نگارش مقاله می‌باشد (این مرحله ممکن است ۱ دقیقه طول بکشد)...")
+        await wait_msg.edit_text("⏳ محصولات و تصاویر دریافت شد. Gemini در حال استدلال و نگارش مقاله می‌باشد (این مرحله ممکن است ۱ دقیقه طول بکشد)...")
         
-        # تولید مقاله کامل
         article_data = await generate_blog_article(selected_title, products_context)
         await state.update_data(article_data=article_data)
         
@@ -140,7 +138,6 @@ async def process_article_image(message: Message, state: FSMContext, bot: Bot):
         data = await state.get_data()
         article_data = data['article_data']
         
-        # آپلود تصویر و سئو
         file_info = await bot.get_file(file_id)
         ext = file_info.file_path.split('.')[-1].lower() if '.' in file_info.file_path else 'jpg'
         file_bytes = io.BytesIO()
@@ -154,7 +151,6 @@ async def process_article_image(message: Message, state: FSMContext, bot: Bot):
         )
         await state.update_data(featured_media_id=media_id)
         
-        # دریافت دسته‌بندی‌های بلاگ از وردپرس
         wp_categories = await wp_service.get_categories()
         
         builder = InlineKeyboardBuilder()
@@ -180,12 +176,19 @@ async def process_article_image(message: Message, state: FSMContext, bot: Bot):
 @router.callback_query(F.data.startswith("gbcat_"), GeminiArticleWizard.waiting_for_category)
 async def process_category_and_create_post(callback: CallbackQuery, state: FSMContext):
     cat_id = int(callback.data.split("_")[1])
-    wait_msg = await callback.message.edit_text("⏳ در حال ساخت ساختار نهایی مقاله و سئو در وردپرس...")
+    wait_msg = await callback.message.edit_text("⏳ در حال ساخت ساختار نهایی مقاله، تزریق برچسب‌ها و سئو در وردپرس...")
     
     try:
         data = await state.get_data()
         article_data = data['article_data']
         selected_title = data['selected_title']
+        
+        # ۱. تبدیل نام برچسب‌ها به آیدی عددی در وردپرس
+        tag_ids = []
+        for tag_name in article_data.get('tags', []):
+            t_id = await wp_service.get_or_create_tag(tag_name)
+            if t_id:
+                tag_ids.append(t_id)
         
         meta_data = {
             "rank_math_focus_keyword": article_data['focus_keyword'],
@@ -199,6 +202,7 @@ async def process_category_and_create_post(callback: CallbackQuery, state: FSMCo
             "status": "draft",
             "slug": article_data['slug'],
             "categories": [cat_id],
+            "tags": tag_ids,                   # 🌟 برچسب‌ها به مقاله متصل شدند
             "featured_media": data['featured_media_id'],
             "meta": meta_data
         }
@@ -215,11 +219,14 @@ async def process_category_and_create_post(callback: CallbackQuery, state: FSMCo
             [InlineKeyboardButton(text="🗑 انتقال به زباله‌دان", callback_data="gbaction_trash")]
         ])
         
+        tags_str = "، ".join(article_data.get('tags', []))
+        
         await wait_msg.edit_text(
             f"🎉 <b>مقاله شما با موفقیت به عنوان پیش‌نویس در سایت ایجاد شد!</b>\n\n"
             f"🏷 <b>عنوان:</b> {selected_title}\n"
             f"🔑 <b>تصویر شاخص:</b> متصل شد و سئو گردید.\n"
-            f"📂 <b>دسته‌بندی:</b> با موفقیت تخصیص یافت.\n\n"
+            f"📂 <b>دسته‌بندی:</b> با موفقیت تخصیص یافت.\n"
+            f"🔖 <b>برچسب‌ها:</b> {tags_str}\n\n"
             f"انتخاب کنید:",
             reply_markup=kb, parse_mode="HTML"
         )
