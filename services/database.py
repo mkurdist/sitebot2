@@ -6,7 +6,6 @@ class DatabaseService:
 
     async def get_pool(self):
         if self._pool is None:
-            # 🌟 محدود کردن اتصالات دیتابیس برای جلوگیری از خطای سقف Supabase
             self._pool = await asyncpg.create_pool(
                 DATABASE_URL,
                 min_size=1,
@@ -19,11 +18,36 @@ class DatabaseService:
 
     async def _init_tables(self):
         async with self._pool.acquire() as conn:
+            # ۱. جدول سفارشات (موجود از قبل)
             await conn.execute('''
                 CREATE TABLE IF NOT EXISTS order_notifications (
                     order_id VARCHAR(50) PRIMARY KEY,
                     status VARCHAR(50),
                     message_id BIGINT
+                )
+            ''')
+            
+            # ۲. 🌟 جدول جدید کاتالوگ محصولات (برای توزیع عادلانه لینک)
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS products (
+                    product_id BIGINT PRIMARY KEY,
+                    name TEXT,
+                    slug TEXT,
+                    permalink TEXT,
+                    image_url TEXT,
+                    mention_count INTEGER DEFAULT 0
+                )
+            ''')
+            
+            # ۳. 🌟 جدول جدید بایگانی سئو (جلوگیری از همنوع‌خواری کلمات کلیدی)
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS seo_ledger (
+                    id SERIAL PRIMARY KEY,
+                    focus_keyword TEXT UNIQUE,
+                    slug TEXT,
+                    title TEXT,
+                    tags TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
 
