@@ -16,7 +16,8 @@ class WordPressService:
 
     async def get_session(self):
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession(headers=self.headers)
+            # اعمال تایم‌اوت ۴۵ ثانیه‌ای برای جلوگیری از کرش کردن
+            self._session = aiohttp.ClientSession(headers=self.headers, timeout=aiohttp.ClientTimeout(total=45))
         return self._session
 
     async def close(self):
@@ -65,13 +66,17 @@ class WordPressService:
             media_data = await response.json()
             media_id = media_data['id']
             
-            update_url = f"{self.base_url}/media/{media_id}"
-            update_payload = {
-                "alt_text": alt_text,
-                "title": title
-            }
-            async with session.post(update_url, json=update_payload, headers=self.headers):
-                pass 
+            # ایزوله کردن خطای سئوی ثانویه برای پایداری آپلود
+            try:
+                update_url = f"{self.base_url}/media/{media_id}"
+                update_payload = {
+                    "alt_text": alt_text,
+                    "title": title
+                }
+                async with session.post(update_url, json=update_payload, headers=self.headers):
+                    pass 
+            except Exception:
+                pass
                 
             return media_id
 
@@ -103,5 +108,27 @@ class WordPressService:
                 text = await response.text()
                 raise Exception(f"WP API Error {response.status}: {text}")
             return await response.json()
+
+    # 🌟 متد جدید برای مدیریت برچسب‌ها
+    async def get_or_create_tag(self, tag_name: str) -> int:
+        url = f"{self.base_url}/tags"
+        session = await self.get_session()
+        try:
+            # جستجوی تگ در دیتابیس
+            async with session.get(url, params={"search": tag_name}) as response:
+                if response.status == 200:
+                    tags = await response.json()
+                    for t in tags:
+                        if t['name'] == tag_name:
+                            return t['id']
+            
+            # اگر وجود نداشت، آن را می‌سازیم
+            async with session.post(url, json={"name": tag_name}) as response:
+                if response.status in [200, 201]:
+                    new_tag = await response.json()
+                    return new_tag['id']
+            return None
+        except Exception:
+            return None
 
 wp_service_instance = WordPressService()
