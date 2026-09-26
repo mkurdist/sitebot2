@@ -181,6 +181,15 @@ async def handle_order_webhook(request):
         return web.json_response({"status": "success", "order_id": order_id}, status=200)
     
     except Exception as e:
+        # 🌟 چاپ خطای خاموش در تلگرام ادمین برای عیب‌یابی سریع
+        try:
+            await bot_instance.send_message(
+                chat_id=ADMIN_ID, 
+                text=f"🐞 <b>خطای مخفی در پردازش وب‌هوک:</b>\n<code>{str(e)}</code>", 
+                parse_mode="HTML"
+            )
+        except Exception:
+            pass
         return web.json_response({"status": "error", "message": str(e)}, status=200)
 
 async def main():
