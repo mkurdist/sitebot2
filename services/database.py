@@ -10,8 +10,9 @@ class DatabaseService:
                 DATABASE_URL,
                 min_size=1,
                 max_size=3,
-                command_timeout=60,
-                max_inactive_connection_lifetime=300
+                command_timeout=60,          # سقف زمانی هر کوئری روی کانکشن‌های موجود
+                timeout=10,                  # 🌟 سقف زمانی برقراری کانکشن جدید (قبلاً تنظیم نشده بود -> پیش‌فرض ۶۰ ثانیه بود)
+                max_inactive_connection_lifetime=180  # 🌟 کانکشن‌های بی‌کار زودتر بازیافت می‌شوند تا ریسک کانکشن مرده کم شود
             )
             await self._init_tables()
         return self._pool
@@ -25,6 +26,18 @@ class DatabaseService:
                     status VARCHAR(50),
                     message_id BIGINT
                 )
+            ''')
+
+            # 🌟 مهاجرت دیتابیس: ستون‌های جدید برای ماشین‌حالت اعلان سفارش
+            # payment_state: گروه منطقی وضعیت (pending/paid/cancelled/failed) برای تشخیص تغییر معنادار
+            # admin_confirmed: ماندگاری تایید ادمین در دیتابیس (در برابر ری‌استارت ربات)
+            await conn.execute('''
+                ALTER TABLE order_notifications
+                ADD COLUMN IF NOT EXISTS payment_state VARCHAR(20)
+            ''')
+            await conn.execute('''
+                ALTER TABLE order_notifications
+                ADD COLUMN IF NOT EXISTS admin_confirmed BOOLEAN DEFAULT FALSE
             ''')
             
             # ۲. 🌟 جدول جدید کاتالوگ محصولات (برای توزیع عادلانه لینک)
