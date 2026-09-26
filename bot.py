@@ -50,6 +50,26 @@ def _payment_state(status: str) -> str:
     return status
 
 # ==========================================
+# 🌟 نگاشت کد استان ووکامرس (ISO) به اسم فارسی
+# ووکامرس در billing.state کد کوتاه می‌فرستد (مثلاً "FRS")، نه اسم فارسی؛
+# این دیکشنری دقیقاً همان ۳۱ کدی است که خود پلاگین ووکامرس برای ایران تعریف کرده.
+# ==========================================
+IRAN_STATE_NAMES = {
+    "KHZ": "خوزستان", "THR": "تهران", "ILM": "ایلام", "BHR": "بوشهر",
+    "ADL": "اردبیل", "ESF": "اصفهان", "YZD": "یزد", "KRH": "کرمانشاه",
+    "KRN": "کرمان", "HDN": "همدان", "GZN": "قزوین", "ZJN": "زنجان",
+    "LRS": "لرستان", "ABZ": "البرز", "EAZ": "آذربایجان شرقی", "WAZ": "آذربایجان غربی",
+    "CHB": "چهارمحال و بختیاری", "SKH": "خراسان جنوبی", "RKH": "خراسان رضوی", "NKH": "خراسان شمالی",
+    "SMN": "سمنان", "FRS": "فارس", "QHM": "قم", "KRD": "کردستان",
+    "KBD": "کهگیلویه و بویراحمد", "GLS": "گلستان", "GIL": "گیلان", "MZN": "مازندران",
+    "MKZ": "مرکزی", "HRZ": "هرمزگان", "SBN": "سیستان و بلوچستان",
+}
+
+def _state_name(code: str) -> str:
+    # اگر کد شناخته‌شده نبود (مثلاً سایت از قبل اسم فارسی کامل فرستاده)، همان مقدار خام برگردانده می‌شود
+    return IRAN_STATE_NAMES.get(code, code)
+
+# ==========================================
 # دکمه: سفارش رو گرفتم ✅ (پایدار در دیتابیس + ضد-تکرار)
 # ==========================================
 @webhook_router.callback_query(F.data.startswith("ack_order_"))
@@ -135,6 +155,7 @@ async def _process_order_event(bot_instance, db_pool, order_id, status, data):
             city = billing.get("city", "")
             address_1 = billing.get("address_1", "")
             state = billing.get("state", "")
+            postcode = billing.get("postcode", "")
 
             shipping_lines = data.get("shipping_lines", [])
             shipping_method = shipping_lines[0].get("method_title", "پست/تیپاکس") if shipping_lines else "پیش‌فرض"
@@ -172,7 +193,8 @@ async def _process_order_event(bot_instance, db_pool, order_id, status, data):
                 f"🚚 ارسال: {shipping_method}\n\n"
                 f"👤 مشتری: {first_name} {last_name}\n"
                 f"📞 تلفن: <code>{phone}</code>\n"
-                f"📍 آدرس: {state}، {city}، {address_1}\n\n"
+                f"📍 آدرس: {_state_name(state)}، {city}، {address_1}\n"
+                f"📮 کد پستی: <code>{postcode}</code>\n\n"
                 f"🛒 اقلام:\n{products_list}\n"
                 f"💰 کل (با هزینه ارسال): {total} تومان"
             )
