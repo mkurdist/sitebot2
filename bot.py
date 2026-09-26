@@ -21,11 +21,14 @@ from handlers.gemini_articles import router as gemini_articles_router
 from handlers.products import router as products_router
 from handlers.orders import router as orders_router
 from handlers.admin_sync import router as admin_sync_router  # 🌟 اضافه شدن روتر همگام‌سازی
+from handlers.settings import router as settings_router  # 🌟 [ماژول تنظیمات] روتر پنل تنظیمات
 
 # وارد کردن سرویس‌های ارتباطی ایزوله
 from services.database import db_service
 from services.woocommerce import wc_service_instance as wc_service
 from services.wordpress import wp_service_instance as wp_service
+from services.settings_service import settings_service  # 🌟 [ماژول تنظیمات]
+from services.scheduler_service import scheduler_loop  # 🌟 [ماژول تنظیمات] حلقه سینک خودکار
 
 # ساخت یک روتر داخلی فقط برای دکمه‌های مربوط به وب‌هوک سفارشات
 webhook_router = Router()
@@ -207,12 +210,49 @@ async def _process_order_event(bot_instance, db_pool, order_id, status, data):
                     [InlineKeyboardButton(text="📦 سفارش رو گرفتم (بستن)", callback_data=f"ack_order_{order_id}")]
                 ])
 
-            sent_msg = await bot_instance.send_message(
-                chat_id=ADMIN_ID,
-                text=order_text,
-                parse_mode="HTML",
-                reply_markup=reply_markup
-            )
+            # 🌟 [ماژول تنظیمات] بررسی روشن/خاموش‌بودن اعلان این وضعیت (پیش‌فرض: روشن)
+            notif_key = "on_hold" if status == "on-hold" else status
+            try:
+                notif_enabled = await settings_service.get(f"notif_enabled_{notif_key}")
+                if notif_enabled is None:
+                    notif_enabled = True
+            except Exception:
+                notif_enabled = True
+
+            sent_msg = None
+            if notif_enabled:
+                # 🌟 [ماژول تنظیمات] خواندن تنظیمات کانال (در صورت عدم اتصال کانال، همه چیز دقیقاً مثل قبل است)
+                channel_id, channel_mode, channel_scope = None, "both", "all_status"
+                try:
+                    channel_id = await settings_service.get("channel_id")
+                    channel_mode = await settings_service.get("channel_mode") or "both"
+                    channel_scope = await settings_service.get("channel_scope") or "all_status"
+                except Exception:
+                    pass
+
+                send_to_private = not (channel_id and channel_mode == "channel_only")
+                if send_to_private:
+                    sent_msg = await bot_instance.send_message(
+                        chat_id=ADMIN_ID,
+                        text=order_text,
+                        parse_mode="HTML",
+                        reply_markup=reply_markup
+                    )
+
+                if channel_id:
+                    scope_ok = (channel_scope != "new_only") or (status == "pending" and is_new)
+                    if scope_ok:
+                        try:
+                            await bot_instance.send_message(
+                                chat_id=int(channel_id),
+                                text=order_text,
+                                parse_mode="HTML",
+                                reply_markup=reply_markup
+                            )
+                        except Exception as ch_err:
+                            await settings_service.log_error("channel_notify", str(ch_err))
+
+            message_id_to_store = sent_msg.message_id if sent_msg else None
 
             # 🌟 نوشتن اتمیک وضعیت جدید + بازنشانی admin_confirmed چون پیام/گروه عوض شده
             await conn.execute('''
@@ -220,7 +260,7 @@ async def _process_order_event(bot_instance, db_pool, order_id, status, data):
                 VALUES ($1, $2, $3, $4, FALSE)
                 ON CONFLICT (order_id) DO UPDATE
                 SET status = $2, payment_state = $3, message_id = $4, admin_confirmed = FALSE
-            ''', order_id, status, new_payment_state, sent_msg.message_id)
+            ''', order_id, status, new_payment_state, message_id_to_store)
 
     return web.json_response({"status": "success", "order_id": order_id}, status=200)
 
@@ -330,7 +370,11 @@ async def main():
     dp.include_router(products_router)          # پردازش محصولات دستی
     dp.include_router(orders_router)            # پردازش سفارشات
     dp.include_router(admin_sync_router)        # 🌟 پردازش همگام‌سازی دیتابیس
+    dp.include_router(settings_router)          # 🌟 [ماژول تنظیمات] پنل تنظیمات پیشرفته
     dp.include_router(webhook_router)           # پردازش دکمه‌های وب‌هوک
+
+    # 🌟 [ماژول تنظیمات] اجرای حلقه‌ی پس‌زمینه‌ی سینک خودکار (فقط اگر از پنل فعال شده باشد)
+    asyncio.create_task(scheduler_loop())
 
     app = web.Application()
     app['bot'] = bot
