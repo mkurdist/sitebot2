@@ -272,9 +272,12 @@ async def handle_order_webhook(request):
     db_pool = await db_service.get_pool()
     
     try:
-        body = await request.text()
-        if not body:
+        # 🌟 اصلاح حیاتی: استفاده از بایت‌های خام (raw_body) برای رفع خطای HMAC و ۴۰۱
+        raw_body = await request.read()
+        if not raw_body:
             return web.json_response({"status": "ignored", "message": "Empty body"}, status=200)
+
+        body_text = raw_body.decode('utf-8')
 
         # 🌟 ۱. تایید خودکار پینگ (Ping) ووکامرس برای رفع خطای ۴۰۱ هنگام ذخیره‌سازی
         event = request.headers.get("x-wc-webhook-event", "")
@@ -288,7 +291,7 @@ async def handle_order_webhook(request):
             return web.json_response({"status": "unauthorized"}, status=401)
 
         expected_signature = base64.b64encode(
-            hmac.new(WC_WEBHOOK_SECRET.encode('utf-8'), body.encode('utf-8'), hashlib.sha256).digest()
+            hmac.new(WC_WEBHOOK_SECRET.encode('utf-8'), raw_body, hashlib.sha256).digest()
         ).decode('utf-8')
 
         if not hmac.compare_digest(received_signature, expected_signature):
@@ -312,7 +315,7 @@ async def handle_order_webhook(request):
             return web.json_response({"status": "unauthorized"}, status=401)
 
         try:
-            data = json.loads(body)
+            data = json.loads(body_text)
         except json.JSONDecodeError:
             return web.json_response({"status": "received_non_json"}, status=200)
 
