@@ -276,6 +276,12 @@ async def handle_order_webhook(request):
         if not body:
             return web.json_response({"status": "ignored", "message": "Empty body"}, status=200)
 
+        # 🌟 ۱. تایید خودکار پینگ (Ping) ووکامرس برای رفع خطای ۴۰۱ هنگام ذخیره‌سازی
+        event = request.headers.get("x-wc-webhook-event", "")
+        if event == "ping":
+            print("🏓 Ping received and accepted from WooCommerce")
+            return web.json_response({"status": "success", "message": "Ping accepted"}, status=200)
+
         # لایه امنیتی HMAC
         received_signature = request.headers.get("x-wc-webhook-signature")
         if not received_signature:
@@ -286,11 +292,17 @@ async def handle_order_webhook(request):
         ).decode('utf-8')
 
         if not hmac.compare_digest(received_signature, expected_signature):
+            # 🌟 ۲. دیباگر هوشمند در تلگرام برای ردیابی عدم تطابق رمزها
             try:
                 await asyncio.wait_for(
                     bot_instance.send_message(
                         chat_id=ADMIN_ID,
-                        text="⚠️ <b>هشدار امنیتی:</b> تلاش مسدود شد! ریکوئست فیک به وب‌هوک ارسال گردید.",
+                        text=(
+                            "⚠️ <b>خطای امنیتی: عدم تطابق رمز وب‌هوک</b>\n\n"
+                            f"🔹 امضای دریافتی از سایت: <code>{received_signature}</code>\n"
+                            f"🔹 امضای محاسبه شده در ربات: <code>{expected_signature}</code>\n"
+                            f"🔑 رمز تنظیم شده در سرور (Render): <code>{WC_WEBHOOK_SECRET}</code>"
+                        ),
                         parse_mode="HTML"
                     ),
                     timeout=10
