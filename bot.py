@@ -20,23 +20,18 @@ from handlers.gemini_products import router as gemini_products_router
 from handlers.gemini_articles import router as gemini_articles_router
 from handlers.products import router as products_router
 from handlers.orders import router as orders_router
-from handlers.admin_sync import router as admin_sync_router  # 🌟 اضافه شدن روتر همگام‌سازی
-from handlers.settings import router as settings_router  # 🌟 [ماژول تنظیمات] روتر پنل تنظیمات
+from handlers.admin_sync import router as admin_sync_router
+from handlers.settings import router as settings_router
 
 # وارد کردن سرویس‌های ارتباطی ایزوله
 from services.database import db_service
 from services.woocommerce import wc_service_instance as wc_service
 from services.wordpress import wp_service_instance as wp_service
-from services.settings_service import settings_service  # 🌟 [ماژول تنظیمات]
-from services.scheduler_service import scheduler_loop  # 🌟 [ماژول تنظیمات] حلقه سینک خودکار
+from services.settings_service import settings_service
+from services.scheduler_service import scheduler_loop
 
-# ساخت یک روتر داخلی فقط برای دکمه‌های مربوط به وب‌هوک سفارشات
 webhook_router = Router()
 
-# ==========================================
-# 🌟 ماشین‌حالت اعلان سفارش: تشخیص گروه معنادار وضعیت پرداخت
-# (فقط برای تشخیص «تغییر معنادار»؛ متن پیام همچنان بر اساس status خام ساخته می‌شود)
-# ==========================================
 PAID_STATUSES = {"processing", "completed"}
 PENDING_STATUSES = {"pending", "on-hold"}
 
@@ -49,14 +44,8 @@ def _payment_state(status: str) -> str:
         return "cancelled"
     if status == "failed":
         return "failed"
-    # وضعیت ناشناخته: گروه مستقل خودش (رفتار محافظه‌کارانه، هر تغییری معنادار تلقی می‌شود)
     return status
 
-# ==========================================
-# 🌟 نگاشت کد استان ووکامرس (ISO) به اسم فارسی
-# ووکامرس در billing.state کد کوتاه می‌فرستد (مثلاً "FRS")، نه اسم فارسی؛
-# این دیکشنری دقیقاً همان ۳۱ کدی است که خود پلاگین ووکامرس برای ایران تعریف کرده.
-# ==========================================
 IRAN_STATE_NAMES = {
     "KHZ": "خوزستان", "THR": "تهران", "ILM": "ایلام", "BHR": "بوشهر",
     "ADL": "اردبیل", "ESF": "اصفهان", "YZD": "یزد", "KRH": "کرمانشاه",
@@ -65,33 +54,26 @@ IRAN_STATE_NAMES = {
     "CHB": "چهارمحال و بختیاری", "SKH": "خراسان جنوبی", "RKH": "خراسان رضوی", "NKH": "خراسان شمالی",
     "SMN": "سمنان", "FRS": "فارس", "QHM": "قم", "KRD": "کردستان",
     "KBD": "کهگیلویه و بویراحمد", "GLS": "گلستان", "GIL": "گیلان", "MZN": "مازندران",
-    "MKZ": "مرکزی", "HRZ": "هرمزگان", "SBN": "سیستان بلوچستان",
+    "MKZ": "مرکزی", "HRZ": "هرمزگان", "SBN": "سیستان و بلوچستان",
 }
 
 def _state_name(code: str) -> str:
-    # اگر کد شناخته‌شده نبود (مثلاً سایت از قبل اسم فارسی کامل فرستاده)، همان مقدار خام برگردانده می‌شود
     return IRAN_STATE_NAMES.get(code, code)
 
-# ==========================================
-# دکمه: سفارش رو گرفتم ✅ (پایدار در دیتابیس + ضد-تکرار)
-# ==========================================
 @webhook_router.callback_query(F.data.startswith("ack_order_"))
 async def ack_order_callback(callback: CallbackQuery):
     order_id = callback.data.split("_")[2]
 
     db_pool = await db_service.get_pool()
     async with db_pool.acquire() as conn:
-        # آپدیت شرطی: فقط اگر قبلاً تایید نشده باشد اعمال می‌شود -> جلوگیری از پردازش تکراری/رقابتی
         result = await conn.execute(
             "UPDATE order_notifications SET admin_confirmed = TRUE WHERE order_id = $1 AND admin_confirmed = FALSE",
             order_id
         )
 
-    # result مثل "UPDATE 0" یا "UPDATE 1" است
     rows_affected = int(result.split()[-1]) if result else 0
 
     if rows_affected == 0:
-        # یا قبلاً تایید شده، یا رکوردی برای این سفارش وجود ندارد (پیام قدیمی/یتیم)
         await callback.answer("این سفارش قبلاً تایید و بسته شده است.", show_alert=True)
         return
 
@@ -99,27 +81,12 @@ async def ack_order_callback(callback: CallbackQuery):
     await callback.message.edit_text(text=new_text, parse_mode="HTML", reply_markup=None)
     await callback.answer(f"سفارش #{order_id} بسته شد!", show_alert=True)
 
-# صفحه ساده برای بررسی سلامت سرور وب (Render Health Check)
 async def health_check(request):
     return web.Response(text="🏺 CitySofal Bot is Live and Modular!")
 
-# 🌟 سقف زمانی قطعی برای کل عملیات دیتابیس+ارسال تلگرام یک وب‌هوک
-# دلیل وجودش: اگر کانکشن دیتابیس به‌صورت خاموش (TCP مرده، بدون RST/FIN) گیر کند،
-# بدون این سقف کل تسک aiohttp برای همیشه معلق می‌ماند، هیچ Exception ای رخ نمی‌دهد
-# و هیچ پیامی (نه موفق، نه خطا) هرگز ارسال نمی‌شود -> سکوت کامل و دائمی.
 WEBHOOK_PROCESSING_TIMEOUT = 45
 
-# ==========================================
-# پردازش اصلی رویداد سفارش (منطق ماشین‌حالت) - جدا شده تا بتوان با wait_for محافظتش کرد
-# ==========================================
 async def _process_order_event(bot_instance, db_pool, order_id, status, data):
-    # ==========================================
-    # 🌟 ماشین‌حالت اعلان سفارش
-    # - لاک تراکنشی per-order (pg_advisory_xact_lock): وب‌هوک‌های همزمان همین سفارش صف می‌شوند
-    #   و از رکوردهای رقابتی/پیام تکراری جلوگیری می‌کند (بخش ۱۷ سند معماری).
-    # - تصمیم بر اساس گروه منطقی وضعیت پرداخت گرفته می‌شود، نه رشته خام status
-    #   (مثلاً processing -> completed پیام تکراری نمی‌سازد، چون هر دو گروه "paid" هستند).
-    # ==========================================
     new_payment_state = _payment_state(status)
 
     async with db_pool.acquire() as conn:
@@ -135,7 +102,6 @@ async def _process_order_event(bot_instance, db_pool, order_id, status, data):
             old_message_id = row['message_id'] if row else None
             old_payment_state = row['payment_state'] if row else None
 
-            # رکوردهای قدیمی از قبل از مهاجرت payment_state=NULL دارند؛ یک‌بار همگام‌سازی می‌شوند
             state_changed = is_new or old_payment_state is None or old_payment_state != new_payment_state
 
             if not state_changed:
@@ -147,7 +113,6 @@ async def _process_order_event(bot_instance, db_pool, order_id, status, data):
                 except Exception:
                     pass
 
-            # استخراج اطلاعات سفارش
             total = str(data.get("total", "0"))
             payment_method_title = data.get("payment_method_title", "نامشخص")
             customer_note = data.get("customer_note", "")
@@ -210,7 +175,6 @@ async def _process_order_event(bot_instance, db_pool, order_id, status, data):
                     [InlineKeyboardButton(text="📦 سفارش رو گرفتم (بستن)", callback_data=f"ack_order_{order_id}")]
                 ])
 
-            # 🌟 [ماژول تنظیمات] بررسی روشن/خاموش‌بودن اعلان این وضعیت (پیش‌فرض: روشن)
             notif_key = "on_hold" if status == "on-hold" else status
             try:
                 notif_enabled = await settings_service.get(f"notif_enabled_{notif_key}")
@@ -221,7 +185,6 @@ async def _process_order_event(bot_instance, db_pool, order_id, status, data):
 
             sent_msg = None
             if notif_enabled:
-                # 🌟 [ماژول تنظیمات] خواندن تنظیمات کانال (در صورت عدم اتصال کانال، همه چیز دقیقاً مثل قبل است)
                 channel_id, channel_mode, channel_scope = None, "both", "all_status"
                 try:
                     channel_id = await settings_service.get("channel_id")
@@ -254,7 +217,6 @@ async def _process_order_event(bot_instance, db_pool, order_id, status, data):
 
             message_id_to_store = sent_msg.message_id if sent_msg else None
 
-            # 🌟 نوشتن اتمیک وضعیت جدید + بازنشانی admin_confirmed چون پیام/گروه عوض شده
             await conn.execute('''
                 INSERT INTO order_notifications (order_id, status, payment_state, message_id, admin_confirmed)
                 VALUES ($1, $2, $3, $4, FALSE)
@@ -265,27 +227,57 @@ async def _process_order_event(bot_instance, db_pool, order_id, status, data):
     return web.json_response({"status": "success", "order_id": order_id}, status=200)
 
 # ==========================================
-# دریافت و بررسی وب‌هوک سفارش از ووکامرس
+# 🌟 سیستم جدید Direct API: مچ شده با کد PHP سایت
+# ==========================================
+async def handle_direct_order(request):
+    bot_instance = request.app['bot']
+    db_pool = await db_service.get_pool()
+    
+    try:
+        body = await request.json()
+        
+        # بررسی رمز امنیتی با رمزی که در سایت قرار دادید
+        if body.get("secret") != WC_WEBHOOK_SECRET:
+            print("⚠️ هشدار امنیتی: رمز اتصال مستقیم اشتباه است.")
+            return web.json_response({"status": "unauthorized"}, status=401)
+
+        data = body.get("data", {})
+        order_id = str(data.get("id", "نامشخص"))
+        status = data.get("status", "نامشخص")
+        
+        print(f"🚀 دریافت موشکی سفارش (Direct API): #{order_id} | status={status}")
+
+        try:
+            return await asyncio.wait_for(
+                _process_order_event(bot_instance, db_pool, order_id, status, data),
+                timeout=WEBHOOK_PROCESSING_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            return web.json_response({"status": "timeout"}, status=200)
+
+    except Exception as e:
+        print(f"🐞 خطای سیستم مستقیم: {e}")
+        return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+# ==========================================
+# دریافت و بررسی وب‌هوک سفارش از ووکامرس (نسخه اصلاح شده قدیمی)
 # ==========================================
 async def handle_order_webhook(request):
     bot_instance = request.app['bot']
     db_pool = await db_service.get_pool()
     
     try:
-        # 🌟 اصلاح حیاتی: استفاده از بایت‌های خام (raw_body) برای رفع خطای HMAC و ۴۰۱
         raw_body = await request.read()
         if not raw_body:
             return web.json_response({"status": "ignored", "message": "Empty body"}, status=200)
 
         body_text = raw_body.decode('utf-8')
 
-        # 🌟 ۱. تایید خودکار پینگ (Ping) ووکامرس برای رفع خطای ۴۰۱ هنگام ذخیره‌سازی
         event = request.headers.get("x-wc-webhook-event", "")
         if event == "ping":
             print("🏓 Ping received and accepted from WooCommerce")
             return web.json_response({"status": "success", "message": "Ping accepted"}, status=200)
 
-        # لایه امنیتی HMAC
         received_signature = request.headers.get("x-wc-webhook-signature")
         if not received_signature:
             return web.json_response({"status": "unauthorized"}, status=401)
@@ -295,23 +287,6 @@ async def handle_order_webhook(request):
         ).decode('utf-8')
 
         if not hmac.compare_digest(received_signature, expected_signature):
-            # 🌟 ۲. دیباگر هوشمند در تلگرام برای ردیابی عدم تطابق رمزها
-            try:
-                await asyncio.wait_for(
-                    bot_instance.send_message(
-                        chat_id=ADMIN_ID,
-                        text=(
-                            "⚠️ <b>خطای امنیتی: عدم تطابق رمز وب‌هوک</b>\n\n"
-                            f"🔹 امضای دریافتی از سایت: <code>{received_signature}</code>\n"
-                            f"🔹 امضای محاسبه شده در ربات: <code>{expected_signature}</code>\n"
-                            f"🔑 رمز تنظیم شده در سرور (Render): <code>{WC_WEBHOOK_SECRET}</code>"
-                        ),
-                        parse_mode="HTML"
-                    ),
-                    timeout=10
-                )
-            except Exception:
-                pass
             return web.json_response({"status": "unauthorized"}, status=401)
 
         try:
@@ -321,48 +296,16 @@ async def handle_order_webhook(request):
 
         order_id = str(data.get("id", "نامشخص"))
         status = data.get("status", "نامشخص")
-        print(f"📥 وب‌هوک سفارش دریافت شد: #{order_id} | status={status}")
-
-        # 🌟 سقف زمانی قطعی: هرچه پیش بیاید (کانکشن مرده دیتابیس، تلگرام کند و ...)
-        # این درخواست حداکثر WEBHOOK_PROCESSING_TIMEOUT ثانیه معلق می‌ماند، نه برای همیشه.
+        
         try:
             return await asyncio.wait_for(
                 _process_order_event(bot_instance, db_pool, order_id, status, data),
                 timeout=WEBHOOK_PROCESSING_TIMEOUT
             )
         except asyncio.TimeoutError:
-            print(f"⏱ Timeout: پردازش سفارش #{order_id} بعد از {WEBHOOK_PROCESSING_TIMEOUT} ثانیه لغو شد (احتمالاً کانکشن دیتابیس/تلگرام معلق مانده بود)")
-            try:
-                await asyncio.wait_for(
-                    bot_instance.send_message(
-                        chat_id=ADMIN_ID,
-                        text=(
-                            f"⏱ <b>Timeout در پردازش سفارش #{order_id}</b>\n"
-                            f"عملیات بعد از {WEBHOOK_PROCESSING_TIMEOUT} ثانیه لغو شد (احتمالاً کانکشن دیتابیس/تلگرام معلق مانده). "
-                            f"لطفاً وضعیت این سفارش را دستی در سایت بررسی کنید."
-                        ),
-                        parse_mode="HTML"
-                    ),
-                    timeout=10
-                )
-            except Exception:
-                pass
             return web.json_response({"status": "timeout", "order_id": order_id}, status=200)
 
     except Exception as e:
-        print(f"🐞 خطای مخفی در پردازش وب‌هوک: {e}")
-        # 🌟 چاپ خطای خاموش در تلگرام ادمین برای عیب‌یابی سریع (با سقف زمانی، تا خودش هنگ نکند)
-        try:
-            await asyncio.wait_for(
-                bot_instance.send_message(
-                    chat_id=ADMIN_ID, 
-                    text=f"🐞 <b>خطای مخفی در پردازش وب‌هوک:</b>\n<code>{str(e)}</code>", 
-                    parse_mode="HTML"
-                ),
-                timeout=10
-            )
-        except Exception:
-            pass
         return web.json_response({"status": "error", "message": str(e)}, status=200)
 
 async def main():
@@ -373,22 +316,19 @@ async def main():
     await db_service.get_pool()
     print("✅ Database ready!")
 
-    # ثبت میدل‌ورهای سراسری
     dp.message.middleware(AdminOnlyMiddleware())
     dp.callback_query.middleware(AdminOnlyMiddleware())
     dp.message.middleware(ClearStateOnMenuMiddleware())
 
-    # ثبت روترها (ترتیب در Aiogram مهم است)
     dp.include_router(common_router)
-    dp.include_router(gemini_products_router)   # پردازش محصولات هوشمند
-    dp.include_router(gemini_articles_router)   # پردازش مقالات هوشمند
-    dp.include_router(products_router)          # پردازش محصولات دستی
-    dp.include_router(orders_router)            # پردازش سفارشات
-    dp.include_router(admin_sync_router)        # 🌟 پردازش همگام‌سازی دیتابیس
-    dp.include_router(settings_router)          # 🌟 [ماژول تنظیمات] پنل تنظیمات پیشرفته
-    dp.include_router(webhook_router)           # پردازش دکمه‌های وب‌هوک
+    dp.include_router(gemini_products_router)
+    dp.include_router(gemini_articles_router)
+    dp.include_router(products_router)
+    dp.include_router(orders_router)
+    dp.include_router(admin_sync_router)
+    dp.include_router(settings_router)
+    dp.include_router(webhook_router)
 
-    # 🌟 [ماژول تنظیمات] اجرای حلقه‌ی پس‌زمینه‌ی سینک خودکار (فقط اگر از پنل فعال شده باشد)
     asyncio.create_task(scheduler_loop())
 
     app = web.Application()
@@ -396,6 +336,8 @@ async def main():
     
     app.router.add_get('/', health_check)
     app.router.add_post('/webhook/order', handle_order_webhook)
+    # 🌟 مسیر کاملاً جدید که به قطعه کد سایت گوش می‌دهد
+    app.router.add_post('/api/direct-order', handle_direct_order)
     
     runner = web.AppRunner(app)
     await runner.setup()
